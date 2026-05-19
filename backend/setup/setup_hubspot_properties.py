@@ -142,22 +142,8 @@ PROPERTIES = [
         "description": "True after Day 14 email sent",
         "groupName":   "contactinformation",
     },
-    {
-        "name":        "lead_status",
-        "label":       "Lead Status",
-        "type":        "enumeration",
-        "fieldType":   "select",
-        "description": "Current status in the sequence",
-        "groupName":   "contactinformation",
-        "options": [
-            {"label": "New",      "value": "New",      "displayOrder": 0, "hidden": False},
-            {"label": "Active",   "value": "Active",   "displayOrder": 1, "hidden": False},
-            {"label": "Replied",  "value": "Replied",  "displayOrder": 2, "hidden": False},
-            {"label": "Stalled",  "value": "Stalled",  "displayOrder": 3, "hidden": False},
-            {"label": "Archived", "value": "Archived", "displayOrder": 4, "hidden": False},
-            {"label": "Cold",     "value": "Cold",     "displayOrder": 5, "hidden": False},
-        ],
-    },
+    # NOTE: hs_lead_status is a HubSpot built-in property — no need to create it.
+    # It already has: New, Contacted, Followed-up-1/2/3, Replied, Stalled, Re-engaged, Cold, Archived
 ]
 
 

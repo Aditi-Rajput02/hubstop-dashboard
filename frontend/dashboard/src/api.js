@@ -26,6 +26,9 @@ export const api = {
       body: JSON.stringify({ name, lead_type, followup_date, contact_ids, expo_source }),
     }),
 
+  // Single contact
+  getContact: (id) => fetchJSON(`/api/contact/${id}`),
+
   // Templates
   getTemplates: () => fetchJSON('/api/templates'),
   saveTemplate: (key, subject, body) =>

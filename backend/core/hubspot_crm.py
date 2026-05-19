@@ -41,15 +41,13 @@ del _sys, _Path, _ROOT, _CORE, _SETUP, _p
 
 import os
 import logging
+import requests
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import hubspot
 from hubspot.crm.contacts import ApiException
 from hubspot.crm.contacts.models import SimplePublicObjectInput
-from hubspot.crm.objects.emails import (
-    SimplePublicObjectInputForCreate as EmailInputForCreate,
-)
 
 from pathlib import Path as _Path
 load_dotenv(_Path(__file__).parent.parent / ".env")
@@ -60,7 +58,7 @@ log = logging.getLogger(__name__)
 CONTACT_PROPS = [
     "firstname", "lastname", "email",
     "lead_type", "expo_name", "expo_source", "expo_followup_date",
-    "lead_status",
+    "hs_lead_status",    # HubSpot built-in Lead Status (New/Contacted/Followed-up-1/2/3/Replied/Stalled/Cold/Archived)
     "email_sequence_day",
     "email_thread_id",
     "email_last_message_id",
@@ -235,19 +233,29 @@ def mark_sequence_day_sent(
     """
     Records that a sequence email was sent for a contact.
     Stores thread state so the next email can reply on the same thread.
+
+    lead_status values used here are our CUSTOM property values
+    (created by setup_hubspot_properties.py):
+      New → first email sent
+      Active → follow-up emails sent
+      Cold → sequence complete, no reply
     """
+    # Day 1 = Contacted (first contact), Day 3/7/14 = Followed-up-N
+    status_map = {1: "Contacted", 3: "Followed-up-1", 7: "Followed-up-2", 14: "Followed-up-3"}
+    status = status_map.get(day, "Followed-up-3")
+
     props = {
-        "email_sequence_day":     str(day),
-        "email_thread_id":        thread_id,
-        "email_last_message_id":  last_message_id,
-        "email_references":       references,
-        "lead_status":            "Active",
+        "email_sequence_day":    day,          # number field — no quotes
+        "email_thread_id":       thread_id,
+        "email_last_message_id": last_message_id,
+        "email_references":      references,
+        "hs_lead_status":        status,       # HubSpot built-in Lead Status property
     }
-    if day == 14:
+    if day >= 14:
         props["email_sequence_complete"] = "true"
 
     update_contact_props(client, contact_id, props)
-    log.info(f"Contact {contact_id}: sequence day {day} recorded in HubSpot")
+    log.info(f"Contact {contact_id}: sequence day {day} recorded, status={status}")
 
 
 def mark_replied(
@@ -259,7 +267,7 @@ def mark_replied(
     update_contact_props(client, contact_id, {
         "email_replied":    "true",
         "email_replied_at": now_ms,
-        "lead_status":      "Active",
+        "hs_lead_status":   "Replied",
     })
     log.info(f"Contact {contact_id}: marked as replied — sequence stopped")
 
@@ -273,7 +281,7 @@ def mark_stalled_sent(
     update_contact_props(client, contact_id, {
         "email_stalled_sent":    "true",
         "email_stalled_sent_at": now_ms,
-        "lead_status":           "Stalled",
+        "hs_lead_status":        "Stalled",
     })
     log.info(f"Contact {contact_id}: stalled re-engagement sent")
 
@@ -281,7 +289,7 @@ def mark_stalled_sent(
 def mark_archived(client: hubspot.Client, contact_id: str) -> None:
     """Archives a contact after Day 14 with no reply."""
     update_contact_props(client, contact_id, {
-        "lead_status":            "Archived",
+        "hs_lead_status":          "Archived",
         "email_sequence_complete": "true",
     })
     log.info(f"Contact {contact_id}: archived after sequence completion")
@@ -297,42 +305,69 @@ def log_email_engagement(
     to_email: str,
 ) -> None:
     """
-    Creates an Email engagement on the contact's timeline in HubSpot.
-    This makes the sent email visible in the contact's activity feed.
+    Creates an EMAIL engagement on the contact's HubSpot timeline using
+    the Engagements v1 REST API.
+
+    This is the correct way to log outbound emails sent via Gmail API so that:
+      - The email appears on the contact's activity feed in HubSpot
+      - HubSpot can track replies on the logged thread
+      - Lead status can update automatically when a reply is detected
+
+    NOTE: We use the REST API directly (not the SDK) because the SDK's
+    crm.objects.emails endpoint requires a connected inbox and does not
+    support logging externally-sent emails.
     """
+    token = os.getenv("HUBSPOT_API_KEY", "")
+    url   = "https://api.hubapi.com/engagements/v1/engagements"
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    sender = os.getenv("GMAIL_SENDER", "")
+
+    payload = {
+        "engagement": {
+            "active":    True,
+            "type":      "EMAIL",
+            "timestamp": now_ms,
+        },
+        "associations": {
+            "contactIds": [int(contact_id)],
+            "companyIds": [],
+            "dealIds":    [],
+            "ownerIds":   [],
+        },
+        "metadata": {
+            "from": {
+                "email": sender,
+            },
+            "to":      [{"email": to_email}],
+            "cc":      [],
+            "bcc":     [],
+            "subject": subject,
+            "text":    body,
+            "html":    body.replace("\n", "<br>"),
+        },
+    }
+
     try:
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        properties = {
-            "hs_timestamp":        str(now_ms),
-            "hubspot_owner_id":    "",          # leave blank or set your owner ID
-            "hs_email_direction":  "EMAIL",
-            "hs_email_status":     "SENT",
-            "hs_email_subject":    subject,
-            "hs_email_text":       body,
-            "hs_email_to_email":   to_email,
-            "hs_email_from_email": os.getenv("GMAIL_SENDER", ""),
-        }
-        email_input = EmailInputForCreate(
-            properties=properties,
-            associations=[
-                {
-                    "to":   {"id": contact_id},
-                    "types": [
-                        {
-                            "associationCategory": "HUBSPOT_DEFINED",
-                            "associationTypeId":   198,  # contact → email
-                        }
-                    ],
-                }
-            ],
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type":  "application/json",
+            },
+            timeout=10,
         )
-        client.crm.objects.emails.basic_api.create(
-            simple_public_object_input_for_create=email_input
-        )
-        log.debug(f"Logged email engagement for contact {contact_id}")
+        if resp.status_code in (200, 201):
+            eng_id = resp.json().get("engagement", {}).get("id", "?")
+            log.info(f"Email logged to HubSpot timeline -- contact {contact_id}, engagement {eng_id}")
+        else:
+            log.warning(
+                f"HubSpot email log failed for contact {contact_id}: "
+                f"{resp.status_code} {resp.text[:200]}"
+            )
     except Exception as e:
         # Non-fatal — engagement logging failure should not stop the sequence
-        log.warning(f"Could not log email engagement for {contact_id}: {e}")
+        log.warning(f"Could not log email engagement for contact {contact_id}: {e}")
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

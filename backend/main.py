@@ -152,7 +152,8 @@ def _status_label(contact: dict) -> str:
         return "Complete"
     if (contact.get("email_stalled_sent") or "").lower() == "true":
         return "Stalled"
-    lead_status = (contact.get("lead_status") or "").strip()
+    # Use hs_lead_status (HubSpot built-in) — was incorrectly "lead_status"
+    lead_status = (contact.get("hs_lead_status") or "").strip()
     if lead_status:
         return lead_status
     seq_day = contact.get("email_sequence_day") or "0"
@@ -175,6 +176,7 @@ def _format_contact(c: dict) -> dict:
         "lead_type":        c.get("lead_type", "general"),
         "expo_name":        c.get("expo_name", ""),
         "sequence_day":     int(c.get("email_sequence_day") or 0),
+        "lead_status":      c.get("hs_lead_status", "New"),
         "status":           _status_label(c),
         "replied":          (c.get("email_replied") or "").lower() == "true",
         "sequence_complete":(c.get("email_sequence_complete") or "").lower() == "true",
