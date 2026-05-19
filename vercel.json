@@ -1,8 +1,9 @@
 {
-  "buildCommand": "cd frontend/dashboard && npm install && npm run build",
-  "outputDirectory": "frontend/dashboard/dist",
-  "installCommand": "echo skip",
-  "framework": null,
+  "rootDirectory": "frontend/dashboard",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "installCommand": "npm install",
+  "framework": "vite",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
