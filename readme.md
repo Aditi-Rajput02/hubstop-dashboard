@@ -1,21 +1,187 @@
-# CRM Project — Phase 3: Email Sequence Automation
+# CRM Sequence Automator — Full Stack Dashboard
 
-## 🚀 TL;DR — Run the App Right Now
+## 🚀 TL;DR — Run the App in One Command
 
-Open **two terminal windows** in `c:\Users\abc\Downloads\CRM\CRM` and run:
+**Windows:**
+```bat
+start.bat
+```
 
+**Mac / Linux:**
 ```bash
-# Terminal 1 — Backend API (port 8000)
-venv\Scripts\uvicorn backend.main:app --reload --port 8000
-
-# Terminal 2 — Frontend Dashboard (port 5173)
-cd frontend\dashboard
-npm run dev
+bash start.sh
 ```
 
 Then open **http://localhost:5173** in your browser.
 
-> ⚠️ If port 5173 is taken, Vite will use 5174, 5175, etc. — check the terminal output for the actual URL.
+> The script checks for venv, .env, and node_modules automatically and opens both servers.
+
+---
+
+## 🏭 Production Deployment
+
+### Option A — Same Server (Recommended for small teams)
+
+Run the FastAPI backend and serve the built React frontend as static files from nginx or the same server.
+
+#### Step 1 — Build the frontend
+
+```bash
+# Set your real backend URL first
+# Edit frontend/dashboard/.env.production:
+#   VITE_API_BASE_URL=https://your-domain.com
+
+cd frontend/dashboard
+npm install
+npm run build
+# Output: frontend/dashboard/dist/
+```
+
+#### Step 2 — Set production environment variables
+
+```bash
+cp .env.example .env
+# Edit .env with real values:
+#   APP_ENV=production
+#   ALLOWED_ORIGINS=https://your-domain.com
+#   HUBSPOT_API_KEY=pat-na2-...
+#   GMAIL_SENDER=...
+#   Client_ID=...
+#   Client_Secret=...
+#   GMAIL_REFRESH_TOKEN=...
+```
+
+#### Step 3 — Start the backend (production mode)
+
+```bash
+# Windows
+venv\Scripts\uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+# Linux / Mac
+venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+```
+
+#### Step 4 — Serve the frontend with nginx
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Serve React static files
+    root /path/to/CRM/frontend/dashboard/dist;
+    index index.html;
+
+    # SPA fallback — all routes go to index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API calls to FastAPI
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+#### Step 5 — Keep the backend alive with systemd (Linux)
+
+```ini
+# /etc/systemd/system/crm-api.service
+[Unit]
+Description=CRM Sequence Automator API
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/path/to/CRM
+ExecStart=/path/to/CRM/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+Restart=always
+EnvironmentFile=/path/to/CRM/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable crm-api
+sudo systemctl start crm-api
+```
+
+#### Step 6 — Keep the scheduler alive with systemd (Linux)
+
+```ini
+# /etc/systemd/system/crm-scheduler.service
+[Unit]
+Description=CRM Email Sequence Scheduler
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/path/to/CRM
+ExecStart=/path/to/CRM/venv/bin/python backend/core/scheduler.py
+Restart=always
+EnvironmentFile=/path/to/CRM/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable crm-scheduler
+sudo systemctl start crm-scheduler
+```
+
+---
+
+### Option B — Windows (Task Scheduler + always-on)
+
+1. **Backend:** Create a Task Scheduler task that runs on startup:
+   - Action: `C:\path\to\CRM\venv\Scripts\uvicorn.exe backend.main:app --host 0.0.0.0 --port 8000 --workers 2`
+   - Start in: `C:\path\to\CRM`
+
+2. **Scheduler:** Create a second task:
+   - Action: `C:\path\to\CRM\venv\Scripts\python.exe backend\core\scheduler.py`
+   - Start in: `C:\path\to\CRM`
+   - Trigger: At startup, repeat every 30 min
+
+3. **Frontend:** Build once (`npm run build`) and serve `dist/` with IIS or nginx for Windows.
+
+---
+
+### Option C — Cloud (Railway / Render / Heroku)
+
+A `Procfile` is included at the root:
+
+```
+web: venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 2
+scheduler: venv/bin/python backend/core/scheduler.py
+```
+
+Set all environment variables from `.env.example` in your cloud provider's dashboard.
+Build the frontend locally and commit `dist/` (or use a separate static hosting service like Vercel/Netlify for the frontend).
+
+---
+
+### Production Checklist
+
+| # | Item | Notes |
+|---|------|-------|
+| ☐ | `.env` has real credentials | Never commit `.env` |
+| ☐ | `APP_ENV=production` | Disables `/docs`, enables JSON logging |
+| ☐ | `ALLOWED_ORIGINS=https://your-domain.com` | Restricts CORS to your domain |
+| ☐ | Frontend built with correct `VITE_API_BASE_URL` | Edit `.env.production` before `npm run build` |
+| ☐ | Backend running with `--workers 2` | Not `--reload` in production |
+| ☐ | Scheduler running as a separate process | Keeps emails firing every 30 min |
+| ☐ | SPF / DKIM / DMARC configured | #1 reason emails land in spam |
+| ☐ | Logs directory writable | `logs/scheduler.log` must be writable |
+| ☐ | HTTPS configured | Required for production — use Let's Encrypt |
+
+---
 
 ---
 

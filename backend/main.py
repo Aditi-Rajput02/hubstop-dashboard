@@ -2,21 +2,26 @@
 FastAPI Backend — CRM Sequence Automator Dashboard
 Serves real data from HubSpot, Gmail throttle state, and scheduler logs.
 
-Run:
+Run (development):
     cd c:\\Users\\abc\\Downloads\\CRM\\CRM
     venv\\Scripts\\uvicorn backend.main:app --reload --port 8000
+
+Run (production):
+    venv\\Scripts\\uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
 """
 
 import os
 import sys
 import json
 import logging
+import logging.config
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -29,23 +34,60 @@ for _p in [str(ROOT), str(BACKEND), str(CORE), str(SETUP)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 load_dotenv(ROOT / ".env")
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+_log_format = (
+    '{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","msg":%(message)r}'
+    if APP_ENV == "production"
+    else "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format=_log_format,
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+# ── Startup validation ────────────────────────────────────────────────────────
+_REQUIRED_ENV = ["HUBSPOT_API_KEY", "GMAIL_SENDER", "Client_ID", "Client_Secret", "GMAIL_REFRESH_TOKEN"]
+_missing = [k for k in _REQUIRED_ENV if not os.getenv(k)]
+if _missing:
+    log.warning(
+        f"⚠️  Missing environment variables: {', '.join(_missing)}. "
+        "Some API endpoints will return errors until these are set."
+    )
+
+# ── CORS origins from env ─────────────────────────────────────────────────────
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+if _raw_origins.strip() == "*":
+    _cors_origins = ["*"]
+else:
+    _cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="CRM Sequence Automator API",
     description="Dashboard backend for the email sequence automation system",
     version="1.0.0",
+    # Hide docs in production
+    docs_url=None if APP_ENV == "production" else "/docs",
+    redoc_url=None if APP_ENV == "production" else "/redoc",
+    openapi_url=None if APP_ENV == "production" else "/openapi.json",
 )
 
-# Allow all origins (dev mode — restrict in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept"],
 )
 
-log = logging.getLogger(__name__)
+# Compress responses > 1 KB automatically
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

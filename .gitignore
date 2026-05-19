@@ -1,7 +1,9 @@
 # ── Environment & Secrets ─────────────────────────────────────────────────────
 .env
 *.env
-.env.*
+# Keep .env.example and .env.production (they have placeholder values only)
+# Uncomment the next line if .env.production contains real secrets:
+# .env.production
 
 # ── Python Virtual Environment ────────────────────────────────────────────────
 venv/
@@ -72,6 +74,12 @@ coverage.xml
 # ── Jupyter Notebooks ─────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dashboard/dist/
+frontend/dashboard/.env
+frontend/dashboard/.env.local
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.bak

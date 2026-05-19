@@ -1,3 +1,4 @@
+# ── Core automation ───────────────────────────────────────────────────────────
 apscheduler>=3.10.0
 hubspot-api-client>=12.0.0
 google-auth>=2.20.0
@@ -6,5 +7,13 @@ google-auth-httplib2>=0.2.0
 google-api-python-client>=2.90.0
 python-dotenv>=1.0.0
 pytz>=2023.3
+
+# ── API server ────────────────────────────────────────────────────────────────
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
+
+# ── Production server (Linux/Mac — use instead of uvicorn directly) ───────────
+# gunicorn>=21.2.0          # uncomment on Linux/Mac production servers
+
+# ── Validation ────────────────────────────────────────────────────────────────
+pydantic>=2.0.0
