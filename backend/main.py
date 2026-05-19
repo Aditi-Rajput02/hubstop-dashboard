@@ -92,27 +92,59 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_hubspot_contacts() -> list[dict]:
-    """Fetch all contacts from HubSpot. Returns [] on error."""
     try:
         import hubspot_crm as crm
         client = crm.get_client()
 
-        # Get all contacts with sequence properties
-        filter_groups = [
-            {
-                "filters": [
-                    {
-                        "propertyName": "email",
-                        "operator": "HAS_PROPERTY",
-                    }
-                ]
-            }
+        SAFE_PROPS = [
+            "firstname", "lastname", "email", "hs_lead_status",
+            "hs_lastmodifieddate",
         ]
-        contacts = crm._search_contacts(client, filter_groups)
-        return contacts
-    except Exception as e:
-        log.warning(f"HubSpot fetch failed: {e}")
-        return []
+        OPTIONAL_PROPS = [
+            "lead_type", "expo_name", "expo_source", "expo_followup_date",
+            "email_sequence_day", "email_thread_id", "email_last_message_id",
+            "email_references", "email_replied", "email_replied_at",
+            "email_stalled_sent", "email_stalled_sent_at", "email_sequence_complete",
+        ]
+        all_props = SAFE_PROPS + OPTIONAL_PROPS
+
+        all_contacts = []
+        after = None
+
+        while True:
+            kwargs = {"limit": 100, "properties": all_props, "archived": False}
+            if after:
+                kwargs["after"] = after
+
+            log.info(f"Fetching contacts with kwargs={kwargs}")
+
+            try:
+                result = client.crm.contacts.basic_api.get_page(**kwargs)
+            except Exception as page_err:
+                log.warning(f"get_page with all props failed: {page_err}")
+                kwargs["properties"] = SAFE_PROPS
+                result = client.crm.contacts.basic_api.get_page(**kwargs)
+
+            log.info(f"Page returned {len(result.results or [])} contacts")
+
+            for c in (result.results or []):
+                props = dict(c.properties or {})
+                props["hs_object_id"] = c.id
+                all_contacts.append(props)
+
+            paging = getattr(result, "paging", None)
+            next_page = getattr(paging, "next", None) if paging else None
+            after = getattr(next_page, "after", None) if next_page else None
+
+            if not after:
+                break
+
+        log.info(f"Fetched {len(all_contacts)} contacts from HubSpot")
+        return all_contacts
+
+    except Exception:
+        log.exception("HubSpot fetch failed")
+        raise
 
 
 def _get_throttle_status() -> dict:

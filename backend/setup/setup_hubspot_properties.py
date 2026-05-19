@@ -109,6 +109,10 @@ PROPERTIES = [
         "fieldType":   "booleancheckbox",
         "description": "True once contact replies to any email",
         "groupName":   "contactinformation",
+        "options": [
+            {"label": "Yes", "value": "true",  "displayOrder": 0, "hidden": False},
+            {"label": "No",  "value": "false", "displayOrder": 1, "hidden": False},
+        ],
     },
     {
         "name":        "email_replied_at",
@@ -125,6 +129,10 @@ PROPERTIES = [
         "fieldType":   "booleancheckbox",
         "description": "True once stalled re-engagement email was sent",
         "groupName":   "contactinformation",
+        "options": [
+            {"label": "Yes", "value": "true",  "displayOrder": 0, "hidden": False},
+            {"label": "No",  "value": "false", "displayOrder": 1, "hidden": False},
+        ],
     },
     {
         "name":        "email_stalled_sent_at",
@@ -141,6 +149,10 @@ PROPERTIES = [
         "fieldType":   "booleancheckbox",
         "description": "True after Day 14 email sent",
         "groupName":   "contactinformation",
+        "options": [
+            {"label": "Yes", "value": "true",  "displayOrder": 0, "hidden": False},
+            {"label": "No",  "value": "false", "displayOrder": 1, "hidden": False},
+        ],
     },
     # NOTE: hs_lead_status is a HubSpot built-in property — no need to create it.
     # It already has: New, Contacted, Followed-up-1/2/3, Replied, Stalled, Re-engaged, Cold, Archived

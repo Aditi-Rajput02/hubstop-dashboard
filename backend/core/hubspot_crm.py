@@ -113,11 +113,11 @@ def get_contacts_due_today(client: hubspot.Client) -> list[dict]:
 
     contacts = _search_contacts(client, filter_groups)
 
-    # Filter out Cold / Archived in Python (HubSpot filter on string is case-sensitive)
+    # Filter out Cold / Archived in Python using hs_lead_status
     excluded = {"cold", "archived"}
     result = [
         c for c in contacts
-        if (c.get("lead_status") or "").lower() not in excluded
+        if (c.get("hs_lead_status") or "").lower() not in excluded
     ]
     log.info(f"Contacts due today: {len(result)}")
     return result
@@ -157,7 +157,7 @@ def get_active_sequence_contacts(client: hubspot.Client) -> list[dict]:
     excluded = {"cold", "archived"}
     return [
         c for c in contacts
-        if (c.get("lead_status") or "").lower() not in excluded
+        if (c.get("hs_lead_status") or "").lower() not in excluded
     ]
 
 
@@ -225,37 +225,43 @@ def update_contact_props(
 def mark_sequence_day_sent(
     client: hubspot.Client,
     contact_id: str,
-    day: int,
+    step: int,
     thread_id: str,
     last_message_id: str,
     references: str,
 ) -> None:
     """
     Records that a sequence email was sent for a contact.
-    Stores thread state so the next email can reply on the same thread.
 
-    lead_status values used here are our CUSTOM property values
-    (created by setup_hubspot_properties.py):
-      New → first email sent
-      Active → follow-up emails sent
-      Cold → sequence complete, no reply
+    Step → hs_lead_status mapping:
+      step 1 → Contacted      (Day 1 email)
+      step 2 → Followed-up-1  (Day 3 email)
+      step 3 → Followed-up-2  (Day 7 email)
+      step 4 → Followed-up-3  (Day 14 email — sequence complete)
+
+    email_sequence_day stores the step number (1/2/3/4), NOT the calendar day.
     """
-    # Day 1 = Contacted (first contact), Day 3/7/14 = Followed-up-N
-    status_map = {1: "Contacted", 3: "Followed-up-1", 7: "Followed-up-2", 14: "Followed-up-3"}
-    status = status_map.get(day, "Followed-up-3")
+    status_map = {
+        1: "Contacted",
+        2: "Followed-up-1",
+        3: "Followed-up-2",
+        4: "Followed-up-3",
+    }
+    status = status_map.get(step, "Followed-up-3")
 
     props = {
-        "email_sequence_day":    day,          # number field — no quotes
+        "email_sequence_day":    str(step),
         "email_thread_id":       thread_id,
         "email_last_message_id": last_message_id,
         "email_references":      references,
-        "hs_lead_status":        status,       # HubSpot built-in Lead Status property
+        "hs_lead_status":        status,
     }
-    if day >= 14:
+    if step >= 4:
         props["email_sequence_complete"] = "true"
+        props["hs_lead_status"]          = "Followed-up-3"
 
     update_contact_props(client, contact_id, props)
-    log.info(f"Contact {contact_id}: sequence day {day} recorded, status={status}")
+    log.info(f"Contact {contact_id}: step {step} recorded, hs_lead_status={status}")
 
 
 def mark_replied(
@@ -287,12 +293,15 @@ def mark_stalled_sent(
 
 
 def mark_archived(client: hubspot.Client, contact_id: str) -> None:
-    """Archives a contact after Day 14 with no reply."""
+    """
+    Marks a contact as Cold after Day-14 (step 4) with no reply.
+    Sequence is complete — no more emails will be sent.
+    """
     update_contact_props(client, contact_id, {
-        "hs_lead_status":          "Archived",
+        "hs_lead_status":          "Cold",
         "email_sequence_complete": "true",
     })
-    log.info(f"Contact {contact_id}: archived after sequence completion")
+    log.info(f"Contact {contact_id}: marked Cold after sequence completion (no reply)")
 
 
 # ── Log email activity as HubSpot Engagement ─────────────────────────────────

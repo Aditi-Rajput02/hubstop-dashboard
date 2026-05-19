@@ -40,49 +40,56 @@ log = logging.getLogger(__name__)
 STALLED_DAYS = int(os.getenv("STALLED_DAYS", 14))  # days of silence before re-engage
 
 
+# Step → calendar day label for logging
+STEP_LABEL = {1: "Day-1", 2: "Day-3", 3: "Day-7", 4: "Day-14"}
+# Step → template day number (used by get_template)
+STEP_TO_TEMPLATE_DAY = {1: 1, 2: 3, 3: 7, 4: 14}
+
+
 # ── Single-contact send helper ────────────────────────────────────────────────
 
 def _send_sequence_email(
     hs_client,
     contact: dict,
-    day: int,
+    step: int,
 ) -> bool:
     """
     Sends one sequence email for a contact.
-    Handles both Day-1 (new thread) and Day-3/7/14 (reply on thread).
-    Updates HubSpot and throttle state on success.
+
+    step 1 → Day-1  (new thread)  → hs_lead_status = Contacted
+    step 2 → Day-3  (reply)       → hs_lead_status = Followed-up-1
+    step 3 → Day-7  (reply)       → hs_lead_status = Followed-up-2
+    step 4 → Day-14 (reply)       → hs_lead_status = Followed-up-3 + complete
 
     Returns True on success, False on failure.
     """
-    email_addr  = contact.get("email", "")
-    contact_id  = contact.get("hs_object_id", "")
-    lead_type   = contact.get("lead_type", "general")
-    thread_id   = contact.get("email_thread_id", "")
-    last_msg_id = contact.get("email_last_message_id", "")
-    references  = contact.get("email_references", "")
+    email_addr   = contact.get("email", "")
+    contact_id   = contact.get("hs_object_id", "")
+    lead_type    = (contact.get("lead_type") or "general").lower()
+    thread_id    = contact.get("email_thread_id", "")
+    last_msg_id  = contact.get("email_last_message_id", "")
+    references   = contact.get("email_references", "")
+    template_day = STEP_TO_TEMPLATE_DAY.get(step, 1)
 
     if not email_addr:
         log.warning(f"Contact {contact_id}: no email address — skipping")
         return False
 
-    # Check throttle before every send
     ok, reason = throttle.can_send_now()
     if not ok:
         log.info(f"Throttle blocked send for {email_addr}: {reason}")
         return False
 
     try:
-        subject, body = get_template(day, lead_type, contact)
+        subject, body = get_template(template_day, lead_type, contact)
     except ValueError as e:
         log.error(f"Template error for {email_addr}: {e}")
         return False
 
     try:
-        if day == 1 or not thread_id:
-            # Start a new thread
+        if step == 1 or not thread_id:
             result = gmail.send_new_email(email_addr, subject, body)
         else:
-            # Reply on the existing thread
             result = gmail.send_reply(
                 to=email_addr,
                 subject=subject,
@@ -92,39 +99,29 @@ def _send_sequence_email(
                 references=references,
             )
 
-        # Fetch the RFC-2822 Message-ID of the message we just sent
-        new_msg_id = gmail.get_message_id_header(result["id"]) or result["id"]
+        new_msg_id     = gmail.get_message_id_header(result["id"]) or result["id"]
+        new_references = f"{references} {new_msg_id}".strip() if references else new_msg_id
 
-        # Build the References chain for the next reply
-        if references:
-            new_references = f"{references} {new_msg_id}"
-        else:
-            new_references = new_msg_id
-
-        # Persist thread state + sequence day in HubSpot
         crm.mark_sequence_day_sent(
             hs_client,
             contact_id,
-            day=day,
+            step=step,
             thread_id=result["threadId"],
             last_message_id=new_msg_id,
             references=new_references,
         )
 
-        # Log as HubSpot engagement (non-fatal if it fails)
         crm.log_email_engagement(hs_client, contact_id, subject, body, email_addr)
-
-        # Record the send in the throttle counter
         throttle.record_send()
 
         log.info(
-            f"✅ Day-{day} sent → {email_addr} "
+            f"✅ {STEP_LABEL.get(step, f'Step-{step}')} sent → {email_addr} "
             f"(thread={result['threadId'][:12]}...)"
         )
         return True
 
     except Exception as e:
-        log.error(f"❌ Failed to send Day-{day} to {email_addr}: {e}")
+        log.error(f"❌ Failed to send step-{step} to {email_addr}: {e}")
         return False
 
 
@@ -132,16 +129,24 @@ def _send_sequence_email(
 
 def run_day1_sends(hs_client) -> dict:
     """
-    Sends Day-1 emails to all contacts whose expo_followup_date == today.
-    Skips contacts that already have email_sequence_day > 0 (already started).
+    Sends Day-1 (step 1) emails to all contacts whose:
+      - expo_followup_date == today
+      - hs_lead_status == "New"  (or not yet set)
+      - email_sequence_day == 0  (not yet started)
     """
     contacts = crm.get_contacts_due_today(hs_client)
     summary  = {"attempted": 0, "sent": 0, "skipped": 0, "throttled": 0}
 
     for contact in contacts:
-        seq_day = int(contact.get("email_sequence_day") or 0)
-        if seq_day > 0:
-            log.debug(f"Contact {contact.get('email')}: already on day {seq_day} — skip Day-1")
+        lead_status = (contact.get("hs_lead_status") or "New").strip()
+        seq_step    = int(contact.get("email_sequence_day") or 0)
+
+        # Only send Day-1 to truly new contacts
+        if seq_step > 0 or lead_status not in ("New", ""):
+            log.debug(
+                f"Contact {contact.get('email')}: already at step {seq_step} "
+                f"/ status={lead_status} — skip Day-1"
+            )
             summary["skipped"] += 1
             continue
 
@@ -152,7 +157,7 @@ def run_day1_sends(hs_client) -> dict:
             summary["throttled"] += (len(contacts) - summary["attempted"] - summary["skipped"])
             break
 
-        sent = _send_sequence_email(hs_client, contact, day=1)
+        sent = _send_sequence_email(hs_client, contact, step=1)
         if sent:
             summary["sent"] += 1
             throttle.random_delay()
@@ -165,38 +170,41 @@ def run_day1_sends(hs_client) -> dict:
 
 # ── Step 2: Follow-up emails (Day 3 / 7 / 14) ────────────────────────────────
 
+# How many calendar days must pass before each next step fires
+DAYS_BETWEEN_STEPS = {
+    1: 2,   # step 1 → step 2: wait 2 days  (Day 1 → Day 3)
+    2: 4,   # step 2 → step 3: wait 4 days  (Day 3 → Day 7)
+    3: 7,   # step 3 → step 4: wait 7 days  (Day 7 → Day 14)
+}
+
+
 def run_followup_sends(hs_client) -> dict:
     """
-    Sends the next sequence email to all contacts that are mid-sequence
-    and whose next send date has arrived.
+    Sends the next follow-up to all mid-sequence contacts whose next step is due.
 
-    Next send date logic:
-      Day 1 sent → Day 3 fires 2 calendar days later
-      Day 3 sent → Day 7 fires 4 calendar days later
-      Day 7 sent → Day 14 fires 7 calendar days later
+    Step mapping:
+      step 1 (Contacted)     → step 2 after 2 days  → hs_lead_status = Followed-up-1
+      step 2 (Followed-up-1) → step 3 after 4 days  → hs_lead_status = Followed-up-2
+      step 3 (Followed-up-2) → step 4 after 7 days  → hs_lead_status = Followed-up-3 + Cold
     """
-    # Days between sequence steps (indexed by current day)
-    NEXT_DAY_MAP = {1: 3, 3: 7, 7: 14}
-
     contacts = crm.get_active_sequence_contacts(hs_client)
     summary  = {"attempted": 0, "sent": 0, "skipped": 0, "throttled": 0}
 
     for contact in contacts:
-        email_addr  = contact.get("email", "")
-        contact_id  = contact.get("hs_object_id", "")
-        current_day = int(contact.get("email_sequence_day") or 0)
+        email_addr   = contact.get("email", "")
+        contact_id   = contact.get("hs_object_id", "")
+        current_step = int(contact.get("email_sequence_day") or 0)
 
-        if current_day not in NEXT_DAY_MAP:
-            # Day 14 already sent — should be marked complete, but guard anyway
-            log.debug(f"{email_addr}: no next day after day {current_day}")
+        if current_step not in DAYS_BETWEEN_STEPS:
+            # step 4 already sent — sequence complete
+            log.debug(f"{email_addr}: no next step after step {current_step}")
             summary["skipped"] += 1
             continue
 
-        next_day = NEXT_DAY_MAP[current_day]
+        next_step    = current_step + 1
+        days_needed  = DAYS_BETWEEN_STEPS[current_step]
 
-        # Check if enough calendar days have passed since the last send
-        # We use the HubSpot email_sequence_day update timestamp as a proxy.
-        # HubSpot stores hs_lastmodifieddate automatically.
+        # Check if enough calendar days have passed since last send
         last_modified_str = contact.get("hs_lastmodifieddate", "")
         if last_modified_str:
             try:
@@ -204,17 +212,15 @@ def run_followup_sends(hs_client) -> dict:
                     last_modified_str.replace("Z", "+00:00")
                 )
                 days_since = (datetime.now(timezone.utc) - last_modified).days
-                days_needed = next_day - current_day
-
                 if days_since < days_needed:
                     log.debug(
-                        f"{email_addr}: Day-{next_day} not due yet "
+                        f"{email_addr}: step {next_step} not due yet "
                         f"({days_since}/{days_needed} days elapsed)"
                     )
                     summary["skipped"] += 1
                     continue
             except ValueError:
-                pass  # If we can't parse the date, proceed anyway
+                pass
 
         summary["attempted"] += 1
         ok, reason = throttle.can_send_now()
@@ -223,9 +229,12 @@ def run_followup_sends(hs_client) -> dict:
             summary["throttled"] += 1
             break
 
-        sent = _send_sequence_email(hs_client, contact, day=next_day)
+        sent = _send_sequence_email(hs_client, contact, step=next_step)
         if sent:
             summary["sent"] += 1
+            # After step 4 (Day-14), mark as Cold if no reply
+            if next_step == 4:
+                crm.mark_archived(hs_client, contact_id)
             throttle.random_delay()
         else:
             summary["skipped"] += 1

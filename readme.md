@@ -167,6 +167,51 @@ Build the frontend locally and commit `dist/` (or use a separate static hosting 
 
 ---
 
+### Option D — Vercel (Frontend Only)
+
+The frontend React app can be deployed to Vercel as a static site. A `vercel.json` is included at the root to handle SPA routing:
+
+```json
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+```
+
+#### Steps to deploy frontend to Vercel:
+
+1. **Install Vercel CLI** (if not already installed):
+   ```bash
+   npm install -g vercel
+   ```
+
+2. **Build the frontend:**
+   ```bash
+   cd frontend/dashboard
+   npm install
+   npm run build
+   ```
+
+3. **Set the API base URL** before building — edit `frontend/dashboard/.env.production`:
+   ```env
+   VITE_API_BASE_URL=https://your-backend-url.com
+   ```
+
+4. **Deploy to Vercel:**
+   ```bash
+   # From the CRM root folder
+   vercel --prod
+   ```
+   Or connect your GitHub repo to [vercel.com](https://vercel.com) and it will auto-deploy on every push.
+
+5. **Set environment variables** in Vercel dashboard → Project → Settings → Environment Variables:
+   - `VITE_API_BASE_URL` = your backend URL (e.g. Railway/Render URL)
+
+> ⚠️ Vercel only hosts the **frontend**. The Python backend (FastAPI + scheduler) must run on a separate server (Railway, Render, VPS, or your local machine).
+
+---
+
 ### Production Checklist
 
 | # | Item | Notes |
@@ -255,6 +300,75 @@ CRM/
 └── data/
     └── *.csv                         # Expo contact CSVs
 ```
+
+---
+
+## 📧 Quick Test — Send a Single Email to Yopmail Right Now
+
+To immediately send a Day 1 test email to `test.cold.lead@yopmail.com` (bypassing the business-hours throttle window):
+
+```bash
+# Windows
+venv\Scripts\python test_send_yopmail.py
+
+# Mac/Linux
+venv/bin/python test_send_yopmail.py
+```
+
+**What it does:**
+1. Bypasses the business-hours throttle window
+2. Sets `expo_followup_date = today` on the yopmail contact in HubSpot
+3. Sends a Day 1 email via Gmail API to `test.cold.lead@yopmail.com`
+4. Updates HubSpot contact status to `Contacted`
+
+**Check the email at:** [https://yopmail.com/?test.cold.lead](https://yopmail.com/?test.cold.lead)
+
+---
+
+## 🧪 Test Mode — Run the Email Sequence (Fastest Way to Test)
+
+The test sequence sends all 5 emails **15 minutes apart** (instead of Day 1/3/7/14) so you can verify the full flow in ~1 hour.
+
+### Run for a single contact:
+```bash
+# Windows
+venv\Scripts\python backend\utils\test_sequence.py --email test.bulk.new@yopmail.com
+
+# Mac/Linux
+venv/bin/python backend/utils/test_sequence.py --email test.bulk.new@yopmail.com
+```
+
+### Run for all yopmail test contacts:
+```bash
+venv\Scripts\python backend\utils\test_sequence.py --all
+```
+
+### What happens during the test:
+| Step | What you'll see |
+|---|---|
+| Email 1 sent | Gmail ID logged, HubSpot engagement created, Lead Status → **Contacted** |
+| 15 min wait | Checks for reply every 60 seconds |
+| Email 2 sent | Lead Status → **Followed-up-1** |
+| Email 3 sent | Lead Status → **Followed-up-2** |
+| Email 4 sent | Lead Status → **Followed-up-3** |
+| Email 5 sent | Lead Status → **Cold** (if no reply) |
+| Reply detected | Sequence stops, Lead Status → **Replied**, Deal created in HubSpot |
+
+### Stop anytime:
+```
+Ctrl+C
+```
+
+### Check the log:
+```bash
+# Windows
+type logs\test_sequence.log
+
+# Mac/Linux
+cat logs/test_sequence.log
+```
+
+> 💡 Check [yopmail.com](https://yopmail.com) to see the emails arrive in the test inbox. Reply from yopmail to trigger reply detection.
 
 ---
 
@@ -874,3 +988,39 @@ Then open **http://localhost:5173** in your browser.
 | `Gmail auth error` | Re-run `gmail_setup.py` to refresh OAuth token |
 | Emails going to spam | Set up SPF/DKIM/DMARC records on your domain |
 | `No contacts to process` | Check HubSpot contacts have `expo_followup_date` set and `email_sequence_day` is 0 or empty |
+| **"You have reached a limit for sending mail"** | Gmail daily sending limit hit — see below |
+| `email_sequence_day update failed: Bad Request` | Custom property not created yet — run `setup_hubspot_properties.py` (requires `crm.schemas.contacts.write` scope on your HubSpot token) |
+
+---
+
+## ⚠️ Gmail Sending Limits
+
+If you see **"You have reached a limit for sending mail. Your message was not sent."** from `mailer-daemon@googlemail.com`, your Gmail account has hit its daily sending quota.
+
+### Gmail API Daily Limits
+
+| Account Type | Daily Limit |
+|---|---|
+| Free Gmail (`@gmail.com`) | **500 emails/day** |
+| Google Workspace (paid) | **2,000 emails/day** |
+
+### What to do
+
+1. **Wait until midnight** — the quota resets at midnight Pacific Time (Google's servers)
+2. **Reduce `MAX_EMAILS_PER_DAY`** in your `.env` to stay under the limit:
+   ```env
+   MAX_EMAILS_PER_DAY=50   # Safe for free Gmail during testing
+   ```
+3. **For production** — upgrade to Google Workspace (`$6/month`) to get the 2,000/day limit
+4. **For high volume** — use a dedicated sending service (SendGrid, Mailgun, AWS SES) instead of Gmail API
+
+### During testing
+
+The test sequence sends multiple emails per contact. If you're testing with many contacts, you can hit the limit quickly. Use a **single test contact** at a time:
+
+```bash
+# Test with just one contact (5 emails total)
+venv\Scripts\python backend\utils\test_sequence.py --email test.bulk.new@yopmail.com
+```
+
+> 💡 The quota resets at midnight. If you hit the limit, just wait until tomorrow and run again.
