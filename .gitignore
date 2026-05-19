@@ -1,0 +1,79 @@
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+*.env
+.env.*
+
+# ── Python Virtual Environment ────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+venv.bak/
+
+# ── Python Cache & Bytecode ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ── Distribution / Build ──────────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/*.log
+logs/throttle_state.json
+
+# ── Data / CSV files (may contain PII) ───────────────────────────────────────
+data/*.csv
+data/*.xlsx
+data/*.xls
+
+# ── Google OAuth tokens ───────────────────────────────────────────────────────
+token.json
+token.pickle
+credentials.json
+*_token.json
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ── Jupyter Notebooks ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp

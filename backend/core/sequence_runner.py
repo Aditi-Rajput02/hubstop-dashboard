@@ -1,0 +1,388 @@
+"""
+Sequence Runner — Phase 3 Core Orchestrator
+Ties together Gmail sender, HubSpot CRM, throttle, and templates.
+
+What this module does on each run:
+  1. Send Day-1 emails to contacts whose expo_followup_date == today
+  2. Send Day-3 / 7 / 14 follow-ups to contacts mid-sequence
+  3. Detect replies → stop sequence, mark replied in HubSpot
+  4. Detect stalled conversations → send re-engagement email
+  5. Archive contacts after Day-14 with no reply
+
+All sends are throttled: business hours only, daily cap, random delays.
+"""
+import sys as _sys
+from pathlib import Path as _Path
+_ROOT = _Path(__file__).parent.parent.parent      # CRM/
+_CORE = _ROOT / "backend" / "core"
+_SETUP = _ROOT / "backend" / "setup"
+for _p in [str(_ROOT), str(_ROOT / "backend"), str(_CORE), str(_SETUP)]:
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+del _sys, _Path, _ROOT, _CORE, _SETUP, _p
+
+
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+
+from dotenv import load_dotenv
+
+import hubspot_crm   as crm
+import gmail_sender  as gmail
+import email_throttle as throttle
+from email_templates import get_template, stalled_reengage, SEQUENCE_DAYS
+
+load_dotenv(__import__("pathlib").Path(__file__).parent.parent.parent / ".env")
+
+log = logging.getLogger(__name__)
+
+STALLED_DAYS = int(os.getenv("STALLED_DAYS", 14))  # days of silence before re-engage
+
+
+# ── Single-contact send helper ────────────────────────────────────────────────
+
+def _send_sequence_email(
+    hs_client,
+    contact: dict,
+    day: int,
+) -> bool:
+    """
+    Sends one sequence email for a contact.
+    Handles both Day-1 (new thread) and Day-3/7/14 (reply on thread).
+    Updates HubSpot and throttle state on success.
+
+    Returns True on success, False on failure.
+    """
+    email_addr  = contact.get("email", "")
+    contact_id  = contact.get("hs_object_id", "")
+    lead_type   = contact.get("lead_type", "general")
+    thread_id   = contact.get("email_thread_id", "")
+    last_msg_id = contact.get("email_last_message_id", "")
+    references  = contact.get("email_references", "")
+
+    if not email_addr:
+        log.warning(f"Contact {contact_id}: no email address — skipping")
+        return False
+
+    # Check throttle before every send
+    ok, reason = throttle.can_send_now()
+    if not ok:
+        log.info(f"Throttle blocked send for {email_addr}: {reason}")
+        return False
+
+    try:
+        subject, body = get_template(day, lead_type, contact)
+    except ValueError as e:
+        log.error(f"Template error for {email_addr}: {e}")
+        return False
+
+    try:
+        if day == 1 or not thread_id:
+            # Start a new thread
+            result = gmail.send_new_email(email_addr, subject, body)
+        else:
+            # Reply on the existing thread
+            result = gmail.send_reply(
+                to=email_addr,
+                subject=subject,
+                body=body,
+                thread_id=thread_id,
+                message_id=last_msg_id,
+                references=references,
+            )
+
+        # Fetch the RFC-2822 Message-ID of the message we just sent
+        new_msg_id = gmail.get_message_id_header(result["id"]) or result["id"]
+
+        # Build the References chain for the next reply
+        if references:
+            new_references = f"{references} {new_msg_id}"
+        else:
+            new_references = new_msg_id
+
+        # Persist thread state + sequence day in HubSpot
+        crm.mark_sequence_day_sent(
+            hs_client,
+            contact_id,
+            day=day,
+            thread_id=result["threadId"],
+            last_message_id=new_msg_id,
+            references=new_references,
+        )
+
+        # Log as HubSpot engagement (non-fatal if it fails)
+        crm.log_email_engagement(hs_client, contact_id, subject, body, email_addr)
+
+        # Record the send in the throttle counter
+        throttle.record_send()
+
+        log.info(
+            f"✅ Day-{day} sent → {email_addr} "
+            f"(thread={result['threadId'][:12]}...)"
+        )
+        return True
+
+    except Exception as e:
+        log.error(f"❌ Failed to send Day-{day} to {email_addr}: {e}")
+        return False
+
+
+# ── Step 1: Day-1 emails for contacts due today ───────────────────────────────
+
+def run_day1_sends(hs_client) -> dict:
+    """
+    Sends Day-1 emails to all contacts whose expo_followup_date == today.
+    Skips contacts that already have email_sequence_day > 0 (already started).
+    """
+    contacts = crm.get_contacts_due_today(hs_client)
+    summary  = {"attempted": 0, "sent": 0, "skipped": 0, "throttled": 0}
+
+    for contact in contacts:
+        seq_day = int(contact.get("email_sequence_day") or 0)
+        if seq_day > 0:
+            log.debug(f"Contact {contact.get('email')}: already on day {seq_day} — skip Day-1")
+            summary["skipped"] += 1
+            continue
+
+        summary["attempted"] += 1
+        ok, reason = throttle.can_send_now()
+        if not ok:
+            log.info(f"Throttle: stopping Day-1 batch — {reason}")
+            summary["throttled"] += (len(contacts) - summary["attempted"] - summary["skipped"])
+            break
+
+        sent = _send_sequence_email(hs_client, contact, day=1)
+        if sent:
+            summary["sent"] += 1
+            throttle.random_delay()
+        else:
+            summary["skipped"] += 1
+
+    log.info(f"Day-1 batch: {summary}")
+    return summary
+
+
+# ── Step 2: Follow-up emails (Day 3 / 7 / 14) ────────────────────────────────
+
+def run_followup_sends(hs_client) -> dict:
+    """
+    Sends the next sequence email to all contacts that are mid-sequence
+    and whose next send date has arrived.
+
+    Next send date logic:
+      Day 1 sent → Day 3 fires 2 calendar days later
+      Day 3 sent → Day 7 fires 4 calendar days later
+      Day 7 sent → Day 14 fires 7 calendar days later
+    """
+    # Days between sequence steps (indexed by current day)
+    NEXT_DAY_MAP = {1: 3, 3: 7, 7: 14}
+
+    contacts = crm.get_active_sequence_contacts(hs_client)
+    summary  = {"attempted": 0, "sent": 0, "skipped": 0, "throttled": 0}
+
+    for contact in contacts:
+        email_addr  = contact.get("email", "")
+        contact_id  = contact.get("hs_object_id", "")
+        current_day = int(contact.get("email_sequence_day") or 0)
+
+        if current_day not in NEXT_DAY_MAP:
+            # Day 14 already sent — should be marked complete, but guard anyway
+            log.debug(f"{email_addr}: no next day after day {current_day}")
+            summary["skipped"] += 1
+            continue
+
+        next_day = NEXT_DAY_MAP[current_day]
+
+        # Check if enough calendar days have passed since the last send
+        # We use the HubSpot email_sequence_day update timestamp as a proxy.
+        # HubSpot stores hs_lastmodifieddate automatically.
+        last_modified_str = contact.get("hs_lastmodifieddate", "")
+        if last_modified_str:
+            try:
+                last_modified = datetime.fromisoformat(
+                    last_modified_str.replace("Z", "+00:00")
+                )
+                days_since = (datetime.now(timezone.utc) - last_modified).days
+                days_needed = next_day - current_day
+
+                if days_since < days_needed:
+                    log.debug(
+                        f"{email_addr}: Day-{next_day} not due yet "
+                        f"({days_since}/{days_needed} days elapsed)"
+                    )
+                    summary["skipped"] += 1
+                    continue
+            except ValueError:
+                pass  # If we can't parse the date, proceed anyway
+
+        summary["attempted"] += 1
+        ok, reason = throttle.can_send_now()
+        if not ok:
+            log.info(f"Throttle: stopping follow-up batch — {reason}")
+            summary["throttled"] += 1
+            break
+
+        sent = _send_sequence_email(hs_client, contact, day=next_day)
+        if sent:
+            summary["sent"] += 1
+            throttle.random_delay()
+        else:
+            summary["skipped"] += 1
+
+    log.info(f"Follow-up batch: {summary}")
+    return summary
+
+
+# ── Step 3: Reply detection — stop sequence if contact replied ────────────────
+
+def run_reply_check(hs_client) -> int:
+    """
+    Checks all active-sequence contacts for replies.
+    If a reply is detected, marks the contact as replied in HubSpot
+    (which stops the sequence on the next run).
+
+    Returns the number of new replies detected.
+    """
+    contacts     = crm.get_active_sequence_contacts(hs_client)
+    reply_count  = 0
+
+    for contact in contacts:
+        thread_id  = contact.get("email_thread_id", "")
+        contact_id = contact.get("hs_object_id", "")
+        email_addr = contact.get("email", "")
+
+        if not thread_id:
+            continue
+
+        if gmail.contact_has_replied(thread_id):
+            crm.mark_replied(hs_client, contact_id)
+            reply_count += 1
+            log.info(f"Reply detected: {email_addr} — sequence stopped")
+            # Auto-create a deal in HubSpot pipeline (non-fatal)
+            try:
+                deal_id = crm.create_deal_for_contact(hs_client, contact)
+                if deal_id:
+                    log.info(f"Deal auto-created for {email_addr}: id={deal_id}")
+            except Exception as deal_err:
+                log.warning(f"Deal creation skipped for {email_addr}: {deal_err}")
+
+    if reply_count:
+        log.info(f"Reply check: {reply_count} new replies detected")
+    return reply_count
+
+
+# ── Step 4: Stalled conversation detection ───────────────────────────────────
+
+def run_stalled_check(hs_client) -> int:
+    """
+    Checks contacts that have replied but whose conversation has gone quiet
+    for STALLED_DAYS days. Sends a re-engagement email on the same thread.
+
+    Returns the number of stalled re-engagements sent.
+    """
+    contacts      = crm.get_replied_contacts(hs_client)
+    stalled_count = 0
+
+    for contact in contacts:
+        thread_id  = contact.get("email_thread_id", "")
+        contact_id = contact.get("hs_object_id", "")
+        email_addr = contact.get("email", "")
+
+        if not thread_id:
+            continue
+
+        # Get timestamp of last message in thread
+        last_ts_ms = gmail.get_last_message_timestamp(thread_id)
+        if last_ts_ms is None:
+            continue
+
+        last_dt      = datetime.fromtimestamp(last_ts_ms / 1000, tz=timezone.utc)
+        days_silent  = (datetime.now(timezone.utc) - last_dt).days
+
+        if days_silent < STALLED_DAYS:
+            log.debug(
+                f"{email_addr}: conversation active "
+                f"({days_silent}/{STALLED_DAYS} days silent)"
+            )
+            continue
+
+        # Conversation has stalled — send re-engagement on same thread
+        ok, reason = throttle.can_send_now()
+        if not ok:
+            log.info(f"Throttle: stopping stalled check — {reason}")
+            break
+
+        subject, body = stalled_reengage(contact)
+        last_msg_id   = contact.get("email_last_message_id", "")
+        references    = contact.get("email_references", "")
+
+        try:
+            result = gmail.send_reply(
+                to=email_addr,
+                subject=subject,
+                body=body,
+                thread_id=thread_id,
+                message_id=last_msg_id,
+                references=references,
+            )
+            crm.mark_stalled_sent(hs_client, contact_id)
+            crm.log_email_engagement(hs_client, contact_id, subject, body, email_addr)
+            throttle.record_send()
+            stalled_count += 1
+            log.info(
+                f"Stalled re-engage sent → {email_addr} "
+                f"({days_silent} days silent)"
+            )
+            throttle.random_delay()
+        except Exception as e:
+            log.error(f"Failed stalled re-engage for {email_addr}: {e}")
+
+    if stalled_count:
+        log.info(f"Stalled check: {stalled_count} re-engagements sent")
+    return stalled_count
+
+
+# ── Full run — called by the scheduler ───────────────────────────────────────
+
+def run_all(hs_client=None) -> dict:
+    """
+    Runs the complete sequence cycle:
+      1. Reply check (fast, no sends)
+      2. Stalled check
+      3. Day-1 sends for new contacts
+      4. Follow-up sends for mid-sequence contacts
+
+    Returns a summary dict.
+    """
+    if hs_client is None:
+        hs_client = crm.get_client()
+
+    log.info("=" * 60)
+    log.info(f"Sequence run started — {datetime.now(timezone.utc).isoformat()}")
+    status = throttle.get_status()
+    log.info(
+        f"Throttle status: window={'OPEN' if status['window_open'] else 'CLOSED'} | "
+        f"sent={status['sent_today']}/{status['daily_cap']} | "
+        f"warmup day {status['warmup_day']} | "
+        f"sender time {status['sender_time']}"
+    )
+
+    if not throttle.is_send_window_open():
+        log.info("Send window is closed — skipping sends (reply/stalled checks still run)")
+
+    replies  = run_reply_check(hs_client)
+    stalled  = run_stalled_check(hs_client)
+    day1     = run_day1_sends(hs_client)
+    followup = run_followup_sends(hs_client)
+
+    summary = {
+        "run_at":          datetime.now(timezone.utc).isoformat(),
+        "replies_detected": replies,
+        "stalled_sent":    stalled,
+        "day1":            day1,
+        "followup":        followup,
+    }
+    log.info(f"Sequence run complete: {summary}")
+    log.info("=" * 60)
+    return summary

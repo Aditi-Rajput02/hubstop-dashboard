@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Sequence Automator — CRM Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-tertiary-container": "#3980f4",
+              "on-secondary-container": "#57657b",
+              "on-error-container": "#93000a",
+              "secondary-fixed-dim": "#b9c7e0",
+              "inverse-primary": "#bec6e0",
+              "primary-fixed": "#dae2fd",
+              "on-tertiary-fixed": "#001a42",
+              "on-secondary-fixed-variant": "#3a485c",
+              "secondary": "#515f74",
+              "surface-tint": "#565e74",
+              "on-primary-fixed-variant": "#3f465c",
+              "background": "#f8f9ff",
+              "surface-dim": "#cbdbf5",
+              "primary": "#000000",
+              "on-tertiary": "#ffffff",
+              "on-secondary": "#ffffff",
+              "secondary-fixed": "#d5e3fd",
+              "outline-variant": "#c6c6cd",
+              "on-secondary-fixed": "#0d1c2f",
+              "tertiary": "#000000",
+              "surface-container-lowest": "#ffffff",
+              "inverse-on-surface": "#eaf1ff",
+              "surface-bright": "#f8f9ff",
+              "on-surface-variant": "#45464d",
+              "surface": "#f8f9ff",
+              "surface-container-highest": "#d3e4fe",
+              "outline": "#76777d",
+              "on-background": "#0b1c30",
+              "tertiary-container": "#001a42",
+              "surface-container-low": "#eff4ff",
+              "error": "#ba1a1a",
+              "surface-variant": "#d3e4fe",
+              "surface-container": "#e5eeff",
+              "on-tertiary-fixed-variant": "#004395",
+              "error-container": "#ffdad6",
+              "tertiary-fixed-dim": "#adc6ff",
+              "secondary-container": "#d5e3fd",
+              "tertiary-fixed": "#d8e2ff",
+              "on-surface": "#0b1c30",
+              "on-primary": "#ffffff",
+              "inverse-surface": "#213145",
+              "on-error": "#ffffff",
+              "primary-container": "#131b2e",
+              "on-primary-fixed": "#131b2e",
+              "surface-container-high": "#dce9ff",
+              "primary-fixed-dim": "#bec6e0",
+              "on-primary-container": "#7c839b"
+            },
+            borderRadius: {
+              DEFAULT: "0.125rem",
+              lg: "0.25rem",
+              xl: "0.5rem",
+              full: "0.75rem"
+            },
+            spacing: {
+              xs: "4px",
+              xl: "32px",
+              "margin-mobile": "16px",
+              md: "16px",
+              base: "4px",
+              gutter: "24px",
+              "margin-desktop": "32px",
+              lg: "24px",
+              sm: "8px"
+            },
+            fontFamily: {
+              "label-md": ["Inter"],
+              "headline-md": ["Inter"],
+              "body-md": ["Inter"],
+              "headline-sm": ["Inter"],
+              "body-sm": ["Inter"],
+              "body-lg": ["Inter"],
+              "headline-lg-mobile": ["Inter"],
+              "code-sm": ["JetBrains Mono"],
+              "headline-lg": ["Inter"]
+            },
+            fontSize: {
+              "label-md": ["12px", { lineHeight: "16px", letterSpacing: "0.05em", fontWeight: "600" }],
+              "headline-md": ["20px", { lineHeight: "28px", letterSpacing: "-0.01em", fontWeight: "600" }],
+              "body-md": ["14px", { lineHeight: "20px", fontWeight: "400" }],
+              "headline-sm": ["16px", { lineHeight: "24px", fontWeight: "600" }],
+              "body-sm": ["12px", { lineHeight: "16px", fontWeight: "400" }],
+              "body-lg": ["16px", { lineHeight: "24px", fontWeight: "400" }],
+              "headline-lg-mobile": ["24px", { lineHeight: "32px", letterSpacing: "-0.01em", fontWeight: "700" }],
+              "code-sm": ["12px", { lineHeight: "18px", fontWeight: "400" }],
+              "headline-lg": ["32px", { lineHeight: "40px", letterSpacing: "-0.02em", fontWeight: "700" }]
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        display: inline-block;
+        line-height: 1;
+        text-transform: none;
+        letter-spacing: normal;
+        word-wrap: normal;
+        white-space: nowrap;
+        direction: ltr;
+      }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        border-width: 1px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
