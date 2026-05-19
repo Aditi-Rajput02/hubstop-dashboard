@@ -178,7 +178,7 @@ export default function App() {
 
           <Route path="/sequences" element={<SequencesPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
-          <Route path="/analytics"  element={<AnalyticsPage />} />
+          <Route path="/analytics"  element={<AnalyticsPage contacts={contacts} contactsLoad={contactsLoad} />} />
           <Route path="/deals"      element={<DealsPage />} />
           <Route path="/logs"       element={<PlaceholderPage title="Logs"        icon="list_alt" />} />
 
