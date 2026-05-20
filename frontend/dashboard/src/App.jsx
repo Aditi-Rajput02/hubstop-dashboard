@@ -13,9 +13,11 @@ import SequencesPage  from './components/SequencesPage.jsx';
 import TemplatesPage  from './components/TemplatesPage.jsx';
 import AnalyticsPage  from './components/AnalyticsPage.jsx';
 import DealsPage      from './components/DealsPage.jsx';
-import QuickActions from './components/QuickActions.jsx';
-import EngineStatus from './components/EngineStatus.jsx';
-import LogTerminal  from './components/LogTerminal.jsx';
+import QuickActions   from './components/QuickActions.jsx';
+import EngineStatus   from './components/EngineStatus.jsx';
+import LogTerminal    from './components/LogTerminal.jsx';
+import ActivityFeed   from './components/ActivityFeed.jsx';
+import RecentActivity from './components/RecentActivity.jsx';
 
 const REFRESH_MS = 30_000;
 
@@ -56,11 +58,17 @@ function StatusBar({ engineOnline, lastRefresh, onRefresh }) {
 }
 
 // ── Dashboard page ────────────────────────────────────────────────────────────
-function DashboardPage({ kpi, throttle, contacts, contactsLoad, stalled, logs, onActionDone, engineOnline }) {
+function DashboardPage({ kpi, throttle, contacts, contactsLoad, stalled, logs, onActionDone, engineOnline, activityFeed, recentItems, activityLoad }) {
   return (
     <div className="p-gutter space-y-gutter">
       <ThrottleBar throttle={throttle} />
       <KPICards kpi={kpi} />
+
+      {/* Recent Activity cards */}
+      <section>
+        <RecentActivity items={recentItems} loading={activityLoad} />
+      </section>
+
       <section className="grid grid-cols-12 gap-gutter items-start">
         <ContactsTable contacts={contacts} loading={contactsLoad} />
         <div className="col-span-12 lg:col-span-4 space-y-gutter">
@@ -68,6 +76,12 @@ function DashboardPage({ kpi, throttle, contacts, contactsLoad, stalled, logs, o
           <EngineStatus throttle={throttle} engineOnline={engineOnline} />
         </div>
       </section>
+
+      {/* Activity Feed */}
+      <section>
+        <ActivityFeed activities={activityFeed} loading={activityLoad} />
+      </section>
+
       <section className="grid grid-cols-12 gap-gutter">
         <LogTerminal lines={logs} />
       </section>
@@ -94,6 +108,9 @@ export default function App() {
   const [contactsLoad, setContactsLoad] = useState(true);
   const [logs,         setLogs]         = useState([]);
   const [lastRefresh,  setLastRefresh]  = useState(null);
+  const [activityFeed, setActivityFeed] = useState([]);
+  const [recentItems,  setRecentItems]  = useState([]);
+  const [activityLoad, setActivityLoad] = useState(true);
 
   const fetchHealth = useCallback(async () => {
     try { await api.health(); setEngineOnline(true); }
@@ -117,10 +134,23 @@ export default function App() {
     catch (e) { console.warn('Logs fetch failed:', e.message); }
   }, []);
 
+  const fetchActivity = useCallback(async () => {
+    setActivityLoad(true);
+    try {
+      const d = await api.activity();
+      setActivityFeed(d.activity_feed || []);
+      setRecentItems(d.recent_items || []);
+    } catch (e) {
+      console.warn('Activity fetch failed:', e.message);
+    } finally {
+      setActivityLoad(false);
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([fetchHealth(), fetchDashboard(), fetchContacts(), fetchLogs()]);
+    await Promise.all([fetchHealth(), fetchDashboard(), fetchContacts(), fetchLogs(), fetchActivity()]);
     setLastRefresh(new Date().toLocaleTimeString());
-  }, [fetchHealth, fetchDashboard, fetchContacts, fetchLogs]);
+  }, [fetchHealth, fetchDashboard, fetchContacts, fetchLogs, fetchActivity]);
 
   useEffect(() => {
     refreshAll();
@@ -161,6 +191,9 @@ export default function App() {
                 logs={logs}
                 onActionDone={refreshAll}
                 engineOnline={engineOnline}
+                activityFeed={activityFeed}
+                recentItems={recentItems}
+                activityLoad={activityLoad}
               />
             }
           />

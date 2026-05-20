@@ -130,6 +130,12 @@ def _get_hubspot_contacts() -> list[dict]:
             for c in (result.results or []):
                 props = dict(c.properties or {})
                 props["hs_object_id"] = c.id
+                # hs_lastmodifieddate in properties is always None from the SDK;
+                # the real timestamp lives on c.updated_at (datetime object)
+                if not props.get("hs_lastmodifieddate"):
+                    updated = getattr(c, "updated_at", None)
+                    if updated:
+                        props["hs_lastmodifieddate"] = updated.isoformat()
                 all_contacts.append(props)
 
             paging = getattr(result, "paging", None)
@@ -238,6 +244,8 @@ def health():
 def get_dashboard():
     """
     Returns KPI summary stats for the dashboard cards.
+    sent_today is derived from HubSpot contacts modified today so it reflects
+    emails sent via any path (scheduler, manual, HubSpot UI, etc.).
     """
     contacts = _get_hubspot_contacts()
     throttle = _get_throttle_status()
@@ -248,6 +256,43 @@ def get_dashboard():
     stalled   = sum(1 for c in contacts if _status_label(c) == "Stalled")
     complete  = sum(1 for c in contacts if _status_label(c) == "Complete")
     new_leads = sum(1 for c in contacts if _status_label(c) == "New")
+
+    # ── Derive real sent_today: combine scheduler file + HubSpot activity ────
+    # The scheduler file tracks emails sent via the Python runner.
+    # HubSpot's hs_lastmodifieddate tracks contacts touched today via any path
+    # (HubSpot UI, manual sends, API, etc.).
+    # We combine both: scheduler_count + contacts modified today that were NOT
+    # already counted by the scheduler (i.e. HubSpot-only sends).
+    today_utc = datetime.now(timezone.utc).date().isoformat()  # "YYYY-MM-DD"
+
+    # Count contacts modified today in HubSpot
+    sent_today_hs = sum(
+        1 for c in contacts
+        if (c.get("hs_lastmodifieddate") or "").startswith(today_utc)
+    )
+
+    # Scheduler's own count (from throttle_state.json)
+    scheduler_sent = throttle.get("sent_today", 0)
+
+    # Combined: use whichever is higher — HubSpot is the ground truth
+    # (scheduler count is always a subset of HubSpot modifications)
+    real_sent_today = max(scheduler_sent, sent_today_hs)
+
+    # Patch the throttle dict so the frontend sees the correct combined number
+    throttle["sent_today"] = real_sent_today
+    throttle["remaining_today"] = max(0, throttle.get("daily_cap", 100) - real_sent_today)
+
+    # Sync corrected count back to throttle_state.json so the scheduler
+    # doesn't over-send on its next run
+    try:
+        import email_throttle as _et
+        state = _et._load_state()
+        if state.get("sent_today", 0) < real_sent_today:
+            state["sent_today"] = real_sent_today
+            _et._save_state(state)
+            log.info(f"Throttle state synced: sent_today updated to {real_sent_today} (scheduler={scheduler_sent}, hubspot={sent_today_hs})")
+    except Exception as _e:
+        log.debug(f"Could not sync throttle state: {_e}")
 
     return {
         "kpi": {
@@ -673,6 +718,124 @@ def preview_template(key: str, firstname: str = "Alex", expo_name: str = "the ex
         return {"subject": subject, "body": body}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/activity")
+def get_activity():
+    """
+    Returns two datasets for the Activity page:
+    1. activity_feed  – per-contact events (Sent / Reply / Stalled / Complete)
+                        sorted by last_modified descending.
+    2. recent_items   – the 4 most-recently-modified contacts + deals,
+                        formatted as cards (type, name, status, last_modified).
+    """
+    try:
+        contacts = _get_hubspot_contacts()
+    except Exception as e:
+        log.warning(f"/api/activity contacts fetch failed: {e}")
+        contacts = []
+
+    # ── Build activity feed ───────────────────────────────────────────────────
+    feed = []
+    for c in contacts:
+        fmt = _format_contact(c)
+        status = fmt["status"]
+
+        # Map contact status → activity type
+        if status == "Replied":
+            act_type = "Reply"
+        elif status == "Stalled":
+            act_type = "Stalled"
+        elif status == "Complete":
+            act_type = "Complete"
+        else:
+            act_type = "Sent"
+
+        # Build a pseudo subject from lead_type + expo_name
+        lead_type = (fmt.get("lead_type") or "general").replace("_", " ").title()
+        expo = fmt.get("expo_name") or ""
+        if expo:
+            subject = f"{lead_type} outreach — {expo}"
+        else:
+            subject = f"{lead_type} outreach"
+
+        feed.append({
+            "id":           fmt["id"],
+            "contact_name": fmt["name"],
+            "email":        fmt["email"],
+            "type":         act_type,
+            "subject":      subject,
+            "lead_type":    fmt.get("lead_type", ""),
+            "sequence_day": fmt.get("sequence_day", 0),
+            "expo_name":    fmt.get("expo_name", ""),
+            "timestamp":    fmt.get("last_modified") or datetime.now(timezone.utc).isoformat(),
+        })
+
+    # Sort by timestamp descending
+    feed.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+
+    # ── Build recent items (cards) ────────────────────────────────────────────
+    # Contacts sorted by last_modified
+    contact_items = []
+    for c in contacts:
+        fmt = _format_contact(c)
+        # Use hs_lead_status as badge if available, else fall back to derived status
+        badge = (fmt.get("lead_status") or "").strip() or fmt["status"]
+        contact_items.append({
+            "id":            fmt["id"],
+            "type":          "contact",
+            "name":          fmt["name"],
+            "status":        badge,
+            "last_modified": fmt.get("last_modified") or "",
+        })
+    contact_items.sort(key=lambda x: x["last_modified"] or "", reverse=True)
+
+    # Deals
+    deal_items = []
+    try:
+        import hubspot_crm as crm
+        client = crm.get_client()
+        result = client.crm.deals.basic_api.get_page(
+            limit=20,
+            properties=["dealname", "dealstage", "hs_lastmodifieddate"],
+            archived=False,
+        )
+        for d in (result.results or []):
+            p = d.properties or {}
+            # Use SDK's updated_at since hs_lastmodifieddate property is None
+            deal_ts = p.get("hs_lastmodifieddate") or ""
+            if not deal_ts:
+                updated = getattr(d, "updated_at", None)
+                if updated:
+                    deal_ts = updated.isoformat()
+            # Clean up deal stage display name
+            raw_stage = (p.get("dealstage") or "")
+            stage_display = raw_stage.replace("_", " ").replace("appointmentscheduled", "Appointment Scheduled").replace("qualifiedtobuy", "Qualified to Buy").replace("presentationscheduled", "Presentation Scheduled").replace("decisionmakerboughtin", "Decision Maker Bought In").replace("contractsent", "Contract Sent").replace("closedwon", "Closed Won").replace("closedlost", "Closed Lost")
+            if stage_display == raw_stage:
+                # fallback: title-case
+                stage_display = raw_stage.replace("_", " ").title()
+            deal_items.append({
+                "id":            d.id,
+                "type":          "deal",
+                "name":          p.get("dealname") or "Unnamed Deal",
+                "status":        stage_display or None,
+                "last_modified": deal_ts,
+            })
+        deal_items.sort(key=lambda x: x["last_modified"] or "", reverse=True)
+    except Exception as e:
+        log.warning(f"/api/activity deals fetch failed: {e}")
+
+    # Merge contacts + deals, sort, take top 4
+    all_recent = contact_items[:8] + deal_items[:4]
+    all_recent.sort(key=lambda x: x["last_modified"] or "", reverse=True)
+    recent_items = all_recent[:4]
+
+    return {
+        "activity_feed":  feed,
+        "recent_items":   recent_items,
+        "total_feed":     len(feed),
+        "timestamp":      datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.get("/api/contact/{contact_id}")

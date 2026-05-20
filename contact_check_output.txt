@@ -1,0 +1,17 @@
+Name: Brian Halligan (Sample Contact)
+  c.updated_at (SDK attr): 2026-05-15 13:15:41.358000+00:00
+  c.created_at (SDK attr): 2026-05-12 13:13:53.516000+00:00
+  props hs_lastmodifieddate: None
+  all prop keys: ['createdate', 'firstname', 'hs_lastmodifieddate', 'hs_lead_status', 'hs_object_id', 'lastmodifieddate', 'lastname']
+
+Name: Test Cold-Lead
+  c.updated_at (SDK attr): 2026-05-19 17:41:11.793000+00:00
+  c.created_at (SDK attr): 2026-05-12 14:30:34.687000+00:00
+  props hs_lastmodifieddate: None
+  all prop keys: ['createdate', 'firstname', 'hs_lastmodifieddate', 'hs_lead_status', 'hs_object_id', 'lastmodifieddate', 'lastname']
+
+Name: Test Contacted-Web
+  c.updated_at (SDK attr): 2026-05-19 04:07:06.486000+00:00
+  c.created_at (SDK attr): 2026-05-12 14:30:34.817000+00:00
+  props hs_lastmodifieddate: None
+  all prop keys: ['createdate', 'firstname', 'hs_lastmodifieddate', 'hs_lead_status', 'hs_object_id', 'lastmodifieddate', 'lastname']

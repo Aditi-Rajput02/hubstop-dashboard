@@ -29,6 +29,9 @@ export const api = {
   // Single contact
   getContact: (id) => fetchJSON(`/api/contact/${id}`),
 
+  // Activity feed
+  activity: () => fetchJSON('/api/activity'),
+
   // Templates
   getTemplates: () => fetchJSON('/api/templates'),
   saveTemplate: (key, subject, body) =>

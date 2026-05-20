@@ -170,11 +170,23 @@ def run_day1_sends(hs_client) -> dict:
 
 # ── Step 2: Follow-up emails (Day 3 / 7 / 14) ────────────────────────────────
 
-# How many calendar days must pass before each next step fires
+# Days offset from expo_followup_date (Day 1) when each step becomes due.
+# Using fixed offsets from Day 1 is immune to spurious hs_lastmodifieddate updates.
+#   step 1 sent on Day 1  (expo_followup_date + 0)
+#   step 2 due  on Day 3  (expo_followup_date + 2)
+#   step 3 due  on Day 7  (expo_followup_date + 6)
+#   step 4 due  on Day 14 (expo_followup_date + 13)
+STEP_DUE_OFFSET_DAYS = {
+    2: 2,    # step 2 (Day-3)  is due 2 days after Day 1
+    3: 6,    # step 3 (Day-7)  is due 6 days after Day 1
+    4: 13,   # step 4 (Day-14) is due 13 days after Day 1
+}
+
+# Fallback: minimum days since hs_lastmodifieddate if expo_followup_date is missing
 DAYS_BETWEEN_STEPS = {
-    1: 2,   # step 1 → step 2: wait 2 days  (Day 1 → Day 3)
-    2: 4,   # step 2 → step 3: wait 4 days  (Day 3 → Day 7)
-    3: 7,   # step 3 → step 4: wait 7 days  (Day 7 → Day 14)
+    1: 2,
+    2: 4,
+    3: 7,
 }
 
 
@@ -183,12 +195,17 @@ def run_followup_sends(hs_client) -> dict:
     Sends the next follow-up to all mid-sequence contacts whose next step is due.
 
     Step mapping:
-      step 1 (Contacted)     → step 2 after 2 days  → hs_lead_status = Followed-up-1
-      step 2 (Followed-up-1) → step 3 after 4 days  → hs_lead_status = Followed-up-2
-      step 3 (Followed-up-2) → step 4 after 7 days  → hs_lead_status = Followed-up-3 + Cold
+      step 1 (Contacted)     → step 2 after 2 days from Day 1  → hs_lead_status = Followed-up-1
+      step 2 (Followed-up-1) → step 3 after 6 days from Day 1  → hs_lead_status = Followed-up-2
+      step 3 (Followed-up-2) → step 4 after 13 days from Day 1 → hs_lead_status = Followed-up-3 + Cold
+
+    Due-date is calculated from expo_followup_date (Day 1) + fixed offset.
+    This is immune to spurious hs_lastmodifieddate updates caused by CRM writes,
+    throttle syncs, or HubSpot UI edits.
     """
     contacts = crm.get_active_sequence_contacts(hs_client)
     summary  = {"attempted": 0, "sent": 0, "skipped": 0, "throttled": 0}
+    today    = datetime.now(timezone.utc).date()
 
     for contact in contacts:
         email_addr   = contact.get("email", "")
@@ -201,26 +218,67 @@ def run_followup_sends(hs_client) -> dict:
             summary["skipped"] += 1
             continue
 
-        next_step    = current_step + 1
-        days_needed  = DAYS_BETWEEN_STEPS[current_step]
+        next_step = current_step + 1
 
-        # Check if enough calendar days have passed since last send
-        last_modified_str = contact.get("hs_lastmodifieddate", "")
-        if last_modified_str:
+        # ── Primary: use expo_followup_date + fixed offset ────────────────────
+        followup_date_str = contact.get("expo_followup_date", "")
+        step_due = None
+
+        if followup_date_str:
             try:
-                last_modified = datetime.fromisoformat(
-                    last_modified_str.replace("Z", "+00:00")
-                )
-                days_since = (datetime.now(timezone.utc) - last_modified).days
-                if days_since < days_needed:
+                # HubSpot stores date props as "YYYY-MM-DD" or as ms timestamp
+                if followup_date_str.isdigit():
+                    # milliseconds → date
+                    day1 = datetime.fromtimestamp(
+                        int(followup_date_str) / 1000, tz=timezone.utc
+                    ).date()
+                else:
+                    day1 = datetime.fromisoformat(
+                        followup_date_str.split("T")[0]
+                    ).date()
+
+                offset = STEP_DUE_OFFSET_DAYS.get(next_step, 0)
+                step_due = day1 + timedelta(days=offset)
+
+                if today < step_due:
                     log.debug(
                         f"{email_addr}: step {next_step} not due yet "
-                        f"({days_since}/{days_needed} days elapsed)"
+                        f"(due {step_due}, today {today})"
                     )
                     summary["skipped"] += 1
                     continue
-            except ValueError:
-                pass
+
+                log.debug(
+                    f"{email_addr}: step {next_step} due on {step_due} — "
+                    f"today is {today} ✓ proceeding"
+                )
+
+            except (ValueError, OSError) as e:
+                log.warning(
+                    f"{email_addr}: could not parse expo_followup_date "
+                    f"'{followup_date_str}': {e} — falling back to hs_lastmodifieddate"
+                )
+                step_due = None  # fall through to fallback
+
+        # ── Fallback: use hs_lastmodifieddate if expo_followup_date missing ──
+        if step_due is None:
+            days_needed = DAYS_BETWEEN_STEPS[current_step]
+            last_modified_str = contact.get("hs_lastmodifieddate", "")
+            if last_modified_str:
+                try:
+                    last_modified = datetime.fromisoformat(
+                        last_modified_str.replace("Z", "+00:00")
+                    )
+                    days_since = (datetime.now(timezone.utc) - last_modified).days
+                    if days_since < days_needed:
+                        log.debug(
+                            f"{email_addr}: step {next_step} not due yet "
+                            f"(fallback: {days_since}/{days_needed} days since last modified)"
+                        )
+                        summary["skipped"] += 1
+                        continue
+                except ValueError:
+                    pass
 
         summary["attempted"] += 1
         ok, reason = throttle.can_send_now()
